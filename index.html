@@ -43,6 +43,10 @@
   #loadPct{font-size:20px;font-weight:800}
   .dust{position:absolute;bottom:20px;width:10px;height:10px;border-radius:50%;background:rgba(255,255,255,.7);pointer-events:none;animation:dust .6s ease-out forwards}
   @keyframes dust{to{transform:translate(-30px,-14px) scale(2);opacity:0}}
+  #cheerBanner{position:absolute;left:0;right:0;bottom:92px;z-index:4;text-align:center;font-size:24px;font-weight:900;color:#ffd54a;text-shadow:0 2px 0 #9c1f30,0 0 8px rgba(0,0,0,.6);pointer-events:none;opacity:0;transition:opacity .25s}
+  #cheerBanner.on{opacity:1}
+  #cheerBanner span{display:inline-block;transition:transform .12s,color .12s}
+  #cheerBanner span.hot{color:#fff;transform:scale(1.3) translateY(-4px)}
 </style>
 </head>
 <body>
@@ -84,6 +88,7 @@
     </div>
     <div id="loadPct">로딩중... 0%</div>
   </div>
+  <div id="cheerBanner"></div>
   <video id="endVideo" src="ending.mp4" playsinline preload="none"></video>
   <div id="endBtnWrap"><button class="btn" id="retryBtn3">다시 하기</button></div>
   <audio id="bgm" src="music.mp3" loop preload="none"></audio>
@@ -140,12 +145,13 @@
   /* ---------- 음악 ---------- */
   function playMusic(){
     if (!musicOn) return;
+    if (window.Cheer) Cheer.start();
     try {
       var p = bgm.play();
       if (p && p.catch) p.catch(function(){});
     } catch(e){}
   }
-  function stopMusic(){ try { bgm.pause(); } catch(e){} }
+  function stopMusic(){ try { bgm.pause(); } catch(e){} if (window.Cheer) Cheer.stop(); }
   bgm.addEventListener('error', function(){ musicBtn.style.display = 'none'; });
   musicBtn.addEventListener('click', function(){
     musicOn = !musicOn;
@@ -171,6 +177,7 @@
   }
   function gameOver(){
     state = 'over';
+    if (window.Cheer) Cheer.stop();
     $('overScore').textContent = '점수 ' + score + ' / 300';
     overOverlay.classList.add('show');
   }
@@ -293,7 +300,7 @@
       }
       if (hit){
         gloves.splice(i,1);
-        hits++; score += POINTS; updateHud();
+        hits++; score += POINTS; updateHud(); if (window.Cheer) Cheer.hit();
         burst(c.x, c.y);
         pops.push({x:c.x, y:c.y, t:0, txt:'+' + POINTS});
         if (hits >= GOAL_HITS){ clearGame(); return; }
@@ -457,6 +464,94 @@
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
+})();
+</script>
+<script>
+/* 야구 응원가: 직접 만든 리듬 + 가사 "어썸주원 안타날려버려~" */
+window.Cheer=(function(){
+  var LYRICS=['어','썸','주','원','!','안','타','날','려','버','려','~'];
+  var BPM=124, BEAT=60/BPM, LOOP_BEATS=8;
+  var ac=null, master=null, running=false, timer=null, nextT=0, cycle=0, banner=document.getElementById('cheerBanner');
+  var timeouts=[];
+  function ctx(){
+    if(!ac){
+      try{ ac=new (window.AudioContext||window.webkitAudioContext)(); master=ac.createGain(); master.gain.value=0.5; master.connect(ac.destination); }catch(e){ac=null;}
+    }
+    if(ac&&ac.state==='suspended') ac.resume();
+    return ac;
+  }
+  function tone(f,t,d,type,v){
+    var o=ac.createOscillator(),g=ac.createGain();
+    o.type=type||'triangle'; o.frequency.value=f;
+    g.gain.setValueAtTime(0.0001,t); g.gain.exponentialRampToValueAtTime(v||0.25,t+0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001,t+d);
+    o.connect(g); g.connect(master); o.start(t); o.stop(t+d+0.02);
+  }
+  function noise(t,d,v,hp){
+    var n=Math.floor(ac.sampleRate*d), b=ac.createBuffer(1,n,ac.sampleRate), x=b.getChannelData(0);
+    for(var i=0;i<n;i++) x[i]=Math.random()*2-1;
+    var s=ac.createBufferSource(); s.buffer=b;
+    var f=ac.createBiquadFilter(); f.type='highpass'; f.frequency.value=hp||1500;
+    var g=ac.createGain(); g.gain.setValueAtTime(v,t); g.gain.exponentialRampToValueAtTime(0.0001,t+d);
+    s.connect(f); f.connect(g); g.connect(master); s.start(t);
+  }
+  function stomp(t){ var o=ac.createOscillator(),g=ac.createGain(); o.frequency.setValueAtTime(150,t); o.frequency.exponentialRampToValueAtTime(45,t+0.12);
+    g.gain.setValueAtTime(0.7,t); g.gain.exponentialRampToValueAtTime(0.0001,t+0.16); o.connect(g); g.connect(master); o.start(t); o.stop(t+0.2); }
+  function clap(t){ noise(t,0.09,0.5,1800); }
+
+  /* 8박 한 바퀴: 쿵쿵 짝 / 쿵쿵 짝짝짝 */
+  var NOTE={C:523.25,D:587.33,E:659.25,G:783.99,A:880};
+  /* [박, 음, 글자 인덱스] 직접 만든 단순한 오음계 멜로디 */
+  var MEL=[[0,'E',0],[0.5,'E',1],[1,'G',2],[1.5,'A',3],[2,'G',4],
+           [4,'E',5],[4.5,'G',6],[5,'A',7],[5.5,'A',8],[6,'G',9],[6.5,'E',10],[7,'D',11]];
+  var STOMP=[0,1,4,5], CLAP=[2,3,6,6.5,7];
+
+  function lyricHtml(){ banner.innerHTML=LYRICS.map(function(c,i){return '<span>'+c+'</span>';}).join(''); }
+  function hot(i,delay){
+    timeouts.push(setTimeout(function(){
+      var s=banner.children; for(var k=0;k<s.length;k++) s[k].classList.remove('hot');
+      if(running&&s[i]) s[i].classList.add('hot');
+    },Math.max(0,delay*1000)));
+  }
+  function speak(){
+    try{
+      var ss=window.speechSynthesis; if(!ss) return;
+      ss.cancel();
+      var u=new SpeechSynthesisUtterance('어썸주원! 안타 날려버려!');
+      u.lang='ko-KR'; u.rate=1.15; u.pitch=1.4; u.volume=0.9;
+      ss.speak(u);
+    }catch(e){}
+  }
+  function schedule(t0){
+    STOMP.forEach(function(b){stomp(t0+b*BEAT);});
+    CLAP.forEach(function(b){clap(t0+b*BEAT);});
+    for(var b=0;b<LOOP_BEATS;b++) if(b%1===0) noise(t0+(b+0.5)*BEAT,0.04,0.12,6000);
+    MEL.forEach(function(m){ tone(NOTE[m[1]],t0+m[0]*BEAT,BEAT*0.45,'triangle',0.22); hot(m[2],t0+m[0]*BEAT-ac.currentTime); });
+    var d=t0-ac.currentTime; timeouts.push(setTimeout(speak,Math.max(0,d*1000)));
+  }
+  function pump(){
+    if(!running||!ac) return;
+    while(nextT<ac.currentTime+0.6){ schedule(nextT); nextT+=LOOP_BEATS*BEAT; cycle++; }
+  }
+  return {
+    start:function(){
+      if(running) return;
+      if(!ctx()||!banner) return;
+      running=true; lyricHtml(); banner.classList.add('on');
+      nextT=ac.currentTime+0.3; pump(); timer=setInterval(pump,200);
+    },
+    stop:function(){
+      running=false; clearInterval(timer);
+      timeouts.forEach(clearTimeout); timeouts=[];
+      try{window.speechSynthesis&&window.speechSynthesis.cancel();}catch(e){}
+      if(banner) banner.classList.remove('on');
+    },
+    hit:function(){
+      if(!running||!ac) return;
+      var t=ac.currentTime;
+      tone(NOTE.G,t,0.1,'square',0.12); tone(NOTE.A,t+0.08,0.1,'square',0.12); tone(1046.5,t+0.16,0.18,'square',0.12);
+    }
+  };
 })();
 </script>
 </body>
